@@ -29,25 +29,6 @@ interface DateEntry {
   id: number;
   date_string: string;
 }
-const allowedOrigins = [
-  "http://localhost:3000",
-  "https://ieee-its-nightslip.onrender.com"
-];
-app.use(cors({
-  origin: true,
-  credentials: true
-}));
-app.use(cors({
-  origin: (origin, callback) => {
-    const allowedOrigins = ["http://localhost:3000", "https://ieee-its-nightslip.onrender.com"];
-    if (!origin || allowedOrigins.includes(origin)) {
-      callback(null, true);
-    } else {
-      callback(new Error("Not allowed by CORS"));
-    }
-  },
-  credentials: true
-}));
 
 
 interface Entry {
