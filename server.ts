@@ -1,378 +1,658 @@
-import 'dotenv/config';
-import express from 'express';
-import { createServer as createViteServer } from 'vite';
-import Database from 'better-sqlite3';
-import path from 'path';
-import { fileURLToPath } from 'url';
-import cookieParser from 'cookie-parser';
-import cors from 'cors';
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
 
-import admin from 'firebase-admin';
+import React, { useState, useEffect } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
+import { auth } from './firebase';
+import { signInWithPopup, GoogleAuthProvider } from 'firebase/auth';
+import logo from '../ieee-its-logo.png';
+import {
+  Calendar,
+  LogOut,
+  Plus,
+  Trash2,
+  ChevronRight,
+  User,
+  Lock,
+  Unlock,
+  RefreshCw,
+  AlertCircle,
+  Search,
+  Upload
+} from 'lucide-react';
 
-admin.initializeApp({
-  projectId: 'ieee-its-b6c77'
-});
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const db = new Database('nightslip.db');
-
-// The URL of your published Google Apps Script Web App
-// Change this to the URL you get after deploying the Apps Script
-const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxAgZcW5nvWhPSTtoiMeD06cSMA3FmX4qHOJtdADOBJuQX1rK63QESjxg8-mkdWaQ5Brg/exec';
-
-// Initialize Database
-db.exec(`
-  CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    reg_no TEXT,
-    email TEXT UNIQUE NOT NULL
-  );
-
-  CREATE TABLE IF NOT EXISTS dates (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    date_string TEXT UNIQUE NOT NULL
-  );
-
-  CREATE TABLE IF NOT EXISTS attendance (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL,
-    date_id INTEGER NOT NULL,
-    coming TEXT DEFAULT 'NOT COMING',
-    applied TEXT DEFAULT 'NOT APPLIED',
-    attendance_1 TEXT DEFAULT 'ABSENT',
-    attendance_2 TEXT DEFAULT 'ABSENT',
-    is_locked INTEGER DEFAULT 0,
-    FOREIGN KEY(user_id) REFERENCES users(id),
-    FOREIGN KEY(date_id) REFERENCES dates(id),
-    UNIQUE(user_id, date_id)
-  );
-`);
-
-// Try migrating old entries if they exist
-try {
-  const hasEntries = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='entries'").get();
-  if (hasEntries) {
-    db.exec(`INSERT OR IGNORE INTO users (name, email) SELECT DISTINCT name, email FROM entries;`);
-  }
-} catch (e) { }
-
-
-declare global {
-  namespace Express {
-    interface Request {
-      user?: any;
-    }
-  }
-}
-
-const app = express();
-const PORT = process.env.PORT || 3000;
 const ADMIN_EMAILS = ['ieeeitsvitvellore@gmail.com', 'liki123456m@gmail.com'];
 
-
-app.use(express.json());
-app.use(cookieParser());
-
-// Update CORS to support multiple origins including Netlify
+interface DateEntry {
+  id: number;
+  date_string: string;
+}
 const allowedOrigins = [
-  'http://localhost:5173', 
-  'http://localhost:3000', 
-  'https://friendly-bublanina-52de2c.netlify.app'
+  "http://localhost:3000",
+  "https://ieee-its-nightslip.onrender.com"
 ];
 app.use(cors({
-  origin: function (origin, callback) {
+  origin: true,
+  credentials: true
+}));
+app.use(cors({
+  origin: (origin, callback) => {
+    const allowedOrigins = ["http://localhost:3000", "https://ieee-its-nightslip.onrender.com"];
     if (!origin || allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
-      callback(new Error('Not allowed by CORS'));
+      callback(new Error("Not allowed by CORS"));
     }
   },
   credentials: true
 }));
 
-// Middleware to check authentication
-const authenticate = async (req: any, res: any, next: any) => {
-  const token = req.cookies.auth_token;
-  if (!token) return res.status(401).json({ error: 'Unauthorized' });
 
-  try {
-    const decodedToken = await admin.auth().verifyIdToken(token);
-    req.user = decodedToken;
-    next();
-  } catch (error) {
-    res.status(401).json({ error: 'Unauthorized' });
-  }
-};
-
-// Auth Routes
-app.post('/api/auth/login', async (req, res) => {
-  const { token } = req.body;
-  if (!token) return res.status(400).json({ error: 'Token required' });
-
-  try {
-    const decodedToken = await admin.auth().verifyIdToken(token);
-    res.cookie('auth_token', token, {
-      httpOnly: true,
-      secure: true,
-      sameSite: 'none',
-    });
-    res.json({ success: true, user: decodedToken });
-  } catch (error) {
-    res.status(401).json({ error: 'Invalid token' });
-  }
-});
-
-app.get('/api/auth/me', async (req, res) => {
-  const token = req.cookies.auth_token;
-  if (!token) return res.json({ user: null });
-
-  try {
-    const decodedToken = await admin.auth().verifyIdToken(token);
-    res.json({ user: decodedToken });
-  } catch (error) {
-    res.json({ user: null });
-  }
-});
-
-app.post('/api/auth/logout', (req, res) => {
-  res.clearCookie('auth_token');
-  res.clearCookie('access_token');
-  res.json({ success: true });
-});
-
-
-// Date Routes
-app.get('/api/dates', authenticate, (req, res) => {
-  const dates = db.prepare('SELECT * FROM dates ORDER BY date_string DESC').all();
-  res.json(dates);
-});
-
-app.post('/api/dates', authenticate, (req, res) => {
-  if (!ADMIN_EMAILS.includes(req.user.email)) return res.status(403).json({ error: 'Forbidden' });
-  const { date_string } = req.body;
-  try {
-    const info = db.prepare('INSERT INTO dates (date_string) VALUES (?)').run(date_string);
-    res.json({ id: info.lastInsertRowid, date_string });
-  } catch (error) {
-    res.status(400).json({ error: 'Date already exists' });
-  }
-});
-
-app.delete('/api/dates/:id', authenticate, (req, res) => {
-  if (!ADMIN_EMAILS.includes(req.user.email)) return res.status(403).json({ error: 'Forbidden' });
-  db.prepare('DELETE FROM dates WHERE id = ?').run(req.params.id);
-  res.json({ success: true });
-});
-
-// Sync entries to Google Apps Script
-const syncToAppsScript = async () => {
-  if (APPS_SCRIPT_URL === 'YOUR_APPS_SCRIPT_WEB_APP_URL_HERE') {
-    console.log('Apps Script URL not set. Skipping sync.');
-    return;
-  }
-
-  try {
-    // Fetch all needed data
-    const allDates = db.prepare('SELECT * FROM dates ORDER BY id ASC').all() as any[];
-    const allUsers = db.prepare('SELECT * FROM users ORDER BY name ASC').all() as any[];
-    const allEntries = db.prepare('SELECT * FROM attendance').all() as any[];
-
-    // Structure the payload for Apps Script
-    const payload = {
-      dates: allDates,
-      users: allUsers,
-      attendance: allEntries
-    };
-
-    // Send to Google Apps Script Web App
-    await fetch(APPS_SCRIPT_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(payload)
-    });
-
-  } catch (error) {
-    console.error('Apps Script Sync Error:', error);
-  }
-};
-
-
-// Users Routes (Master Data)
-app.get('/api/users', authenticate, (req, res) => {
-  const users = db.prepare('SELECT * FROM users ORDER BY name ASC').all();
-  res.json(users);
-});
-
-app.post('/api/users', authenticate, (req: any, res: any) => {
-  if (!ADMIN_EMAILS.includes(req.user.email)) return res.status(403).json({ error: 'Forbidden' });
-  const { users } = req.body;
-  if (!Array.isArray(users)) return res.status(400).json({ error: 'Expected users array' });
-
-  const insert = db.prepare('INSERT OR IGNORE INTO users (name, reg_no, email) VALUES (?, ?, ?)');
-  const update = db.prepare('UPDATE users SET name = ?, reg_no = ? WHERE email = ?');
-
-  const transaction = db.transaction((usersToSave) => {
-    for (const u of usersToSave) {
-      if (!u.email || !u.name) continue;
-      const res = insert.run(u.name, u.reg_no || '', u.email);
-      if (res.changes === 0) {
-        update.run(u.name, u.reg_no || '', u.email); // Update name/reg_no if email already exists
-      }
-    }
-  });
-
-  transaction(users);
-  
-  syncToAppsScript();
-
-  res.json({ success: true });
-});
-
-app.patch('/api/users/:id', authenticate, (req: any, res: any) => {
-  if (!ADMIN_EMAILS.includes(req.user.email)) return res.status(403).json({ error: 'Forbidden' });
-  const { field, value } = req.body;
-  if (!['name', 'email', 'reg_no'].includes(field)) return res.status(400).json({ error: 'Invalid field' });
-  
-  db.prepare(`UPDATE users SET ${field} = ? WHERE id = ?`).run(value, req.params.id);
-  syncToAppsScript();
-  
-  res.json({ success: true });
-});
-
-app.delete('/api/users/:id', authenticate, (req: any, res: any) => {
-  if (!ADMIN_EMAILS.includes(req.user.email)) return res.status(403).json({ error: 'Forbidden' });
-  
-  // Due to SQLite foreign keys, deleting a user will delete all their attendance records
-  db.prepare('DELETE FROM users WHERE id = ?').run(req.params.id);
-
-  syncToAppsScript();
-
-  res.json({ success: true });
-});
-
-// Entry Routes
-app.get('/api/dates/:dateId/entries', authenticate, (req, res) => {
-  const entries = db.prepare(`
-    SELECT u.id as id, u.name, u.reg_no, u.email,
-           IFNULL(a.coming, 'NOT COMING') as coming,
-           IFNULL(a.applied, 'NOT APPLIED') as applied,
-           IFNULL(a.attendance_1, 'ABSENT') as attendance_1,
-           IFNULL(a.attendance_2, 'ABSENT') as attendance_2,
-           IFNULL(a.is_locked, 0) as is_locked
-    FROM users u
-    LEFT JOIN attendance a ON a.user_id = u.id AND a.date_id = ?
-    ORDER BY u.name ASC
-  `).all(req.params.dateId);
-  res.json(entries);
-});
-
-app.patch('/api/dates/:dateId/users/:userId', authenticate, async (req: any, res: any) => {
-  const { dateId, userId } = req.params;
-  const { field, value } = req.body;
-  const userEmail = req.user.email;
-  const isOwner = ADMIN_EMAILS.includes(userEmail);
-
-  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(userId) as any;
-  if (!user) return res.status(404).json({ error: 'User not found' });
-
-  const isTargetUser = userEmail.toLowerCase() === user.email.toLowerCase();
-
-  let attendance = db.prepare('SELECT * FROM attendance WHERE user_id = ? AND date_id = ?').get(userId, dateId) as any;
-  if (!attendance) {
-    attendance = { coming: 'NOT COMING', applied: 'NOT APPLIED', attendance_1: 'ABSENT', attendance_2: 'ABSENT', is_locked: 0 };
-  }
-
-  if (!isOwner) {
-    if (!isTargetUser || (field !== 'coming' && field !== 'applied')) {
-      return res.status(403).json({ error: 'Access Denied: You can only edit your own row (Coming/Applied).' });
-    }
-    if (attendance.is_locked === 1) {
-      return res.status(403).json({ error: 'Submission Locked: You have already used your one chance to edit.' });
-    }
-  }
-
-  let updates: any = { [field]: value };
-
-  if (!isOwner || (isOwner && ['coming', 'applied'].includes(field))) {
-    if (field === 'coming') {
-      updates.applied = 'NOT APPLIED';
-      updates.attendance_1 = 'ABSENT';
-      updates.attendance_2 = 'ABSENT';
-    }
-
-    if (field === 'applied') {
-      const comingVal = field === 'coming' ? value : attendance.coming;
-      const appliedVal = field === 'applied' ? value : attendance.applied;
-
-      if (comingVal.toUpperCase() === 'COMING' && appliedVal.toUpperCase() === 'APPLIED') {
-        updates.attendance_1 = 'PRESENT';
-        updates.attendance_2 = 'PRESENT';
-      } else {
-        updates.attendance_1 = 'ABSENT';
-        updates.attendance_2 = 'ABSENT';
-      }
-      if (!isOwner) {
-        updates.is_locked = 1;
-      }
-    }
-  }
-
-  if (isOwner && !['coming', 'applied'].includes(field)) {
-    updates = { [field]: value };
-  }
-
-  const newComing = updates.coming || attendance.coming;
-  const newApplied = updates.applied || attendance.applied;
-  const newAtt1 = updates.attendance_1 || attendance.attendance_1;
-  const newAtt2 = updates.attendance_2 || attendance.attendance_2;
-  const newLocked = updates.is_locked !== undefined ? updates.is_locked : attendance.is_locked;
-
-  db.prepare(`
-    INSERT INTO attendance (user_id, date_id, coming, applied, attendance_1, attendance_2, is_locked)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(user_id, date_id) DO UPDATE SET
-      coming=excluded.coming,
-      applied=excluded.applied,
-      attendance_1=excluded.attendance_1,
-      attendance_2=excluded.attendance_2,
-      is_locked=excluded.is_locked
-  `).run(userId, dateId, newComing, newApplied, newAtt1, newAtt2, newLocked);
-
-  syncToAppsScript();
-
-  res.json({ success: true });
-});
-
-app.post('/api/dates/:dateId/reset', authenticate, async (req: any, res: any) => {
-  if (!ADMIN_EMAILS.includes(req.user.email)) return res.status(403).json({ error: 'Forbidden' });
-
-  db.prepare('DELETE FROM attendance WHERE date_id = ?').run(req.params.dateId);
-
-  syncToAppsScript();
-
-  res.json({ success: true });
-});
-
-async function startServer() {
-  if (process.env.NODE_ENV !== 'production') {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: 'spa',
-    });
-    app.use(vite.middlewares);
-  } else {
-    app.use(express.static(path.join(__dirname, 'dist')));
-    app.get('*', (req, res) => {
-      res.sendFile(path.join(__dirname, 'dist', 'index.html'));
-    });
-  }
-
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-  });
+interface Entry {
+  id: number;
+  date_id: number;
+  name: string;
+  reg_no: string;
+  email: string;
+  coming: string;
+  applied: string;
+  attendance_1: string;
+  attendance_2: string;
+  is_locked: number;
 }
 
-startServer();
+export default function App() {
+  const [user, setUser] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [dates, setDates] = useState<DateEntry[]>([]);
+  const [selectedDate, setSelectedDate] = useState<DateEntry | null>(null);
+  const [entries, setEntries] = useState<Entry[]>([]);
+  const [newDate, setNewDate] = useState('');
+  const [newName, setNewName] = useState('');
+  const [newRegNo, setNewRegNo] = useState('');
+  const [newEmail, setNewEmail] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
+
+  const [loginError, setLoginError] = useState('');
+
+  useEffect(() => {
+    fetchUser();
+  }, []);
+
+  useEffect(() => {
+    if (user) {
+      fetchDates();
+    }
+  }, [user]);
+
+  useEffect(() => {
+    if (selectedDate) {
+      fetchEntries(selectedDate.id);
+    }
+  }, [selectedDate]);
+
+  const fetchUser = async () => {
+    try {
+      const res = await fetch('/api/auth/me');
+      const data = await res.json();
+      setUser(data.user);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const fetchDates = async () => {
+    const res = await fetch('/api/dates');
+    const data = await res.json();
+    setDates(data);
+  };
+
+  const fetchEntries = async (dateId: number) => {
+    const res = await fetch(`/api/dates/${dateId}/entries`);
+    const data = await res.json();
+    setEntries(data);
+  };
+
+  const handleLogin = async () => {
+    setLoginError('');
+    try {
+      const provider = new GoogleAuthProvider();
+      const userCredential = await signInWithPopup(auth, provider);
+
+      const credential = GoogleAuthProvider.credentialFromResult(userCredential);
+      const accessToken = credential?.accessToken;
+      const token = await userCredential.user.getIdToken();
+
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token, accessToken })
+      });
+
+      if (res.ok) {
+        fetchUser();
+      } else {
+        setLoginError('Server authentication failed.');
+      }
+    } catch (err: any) {
+      setLoginError(err.message || 'Login failed');
+    }
+  };
+
+  const handleLogout = async () => {
+    await fetch('/api/auth/logout', { method: 'POST' });
+    setUser(null);
+    setSelectedDate(null);
+  };
+
+  const addDate = async () => {
+    if (!newDate) return;
+    const res = await fetch('/api/dates', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ date_string: newDate }),
+    });
+    if (res.ok) {
+      fetchDates();
+      setNewDate('');
+    }
+  };
+
+  const deleteDate = async (id: number) => {
+    if (!confirm('Are you sure you want to delete this date and all its entries?')) return;
+    await fetch(`/api/dates/${id}`, { method: 'DELETE' });
+    fetchDates();
+    if (selectedDate?.id === id) setSelectedDate(null);
+  };
+
+  const addMasterUser = async () => {
+    if (!newName || !newEmail) return;
+
+    await fetch('/api/users', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ users: [{ name: newName, reg_no: newRegNo, email: newEmail }] }),
+    });
+
+    if (selectedDate) fetchEntries(selectedDate.id);
+    setNewName('');
+    setNewRegNo('');
+    setNewEmail('');
+  };
+
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async (evt) => {
+      const text = evt.target?.result as string;
+      const lines = text.split('\n');
+      const headers = lines[0].split(',').map(h => h.trim().toLowerCase());
+
+      const nIdx = headers.indexOf('name');
+      const eIdx = headers.indexOf('email');
+      const rIdx = headers.findIndex(h => h.includes('reg'));
+
+      if (nIdx === -1 || eIdx === -1) {
+        alert("CSV must have 'Name' and 'Email' columns.");
+        e.target.value = '';
+        return;
+      }
+
+      const newUsers = [];
+      for (let i = 1; i < lines.length; i++) {
+        const cols = lines[i].split(',');
+        if (cols.length >= 2 && cols[eIdx]) {
+          newUsers.push({
+            name: cols[nIdx]?.trim(),
+            email: cols[eIdx]?.trim(),
+            reg_no: rIdx !== -1 ? cols[rIdx]?.trim() : ''
+          });
+        }
+      }
+
+      if (newUsers.length > 0) {
+        await fetch('/api/users', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ users: newUsers })
+        });
+        if (selectedDate) fetchEntries(selectedDate.id);
+      }
+      e.target.value = '';
+    };
+    reader.readAsText(file);
+  };
+
+  const deleteMasterUser = async (id: number) => {
+    if (!confirm('Are you sure you want to permanently delete this student and ALL their attendance history?')) return;
+    const res = await fetch(`/api/users/${id}`, { method: 'DELETE' });
+    if (res.ok) {
+       if (selectedDate) fetchEntries(selectedDate.id);
+    }
+  };
+
+  const updateMasterUser = async (id: number, field: string, value: string) => {
+    const res = await fetch(`/api/users/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ field, value }),
+    });
+    if (res.ok) {
+       if (selectedDate) fetchEntries(selectedDate.id);
+    } else {
+       const data = await res.json();
+       alert(data.error);
+    }
+  };
+
+  const updateEntry = async (id: number, field: string, value: string) => {
+    const res = await fetch(`/api/dates/${selectedDate?.id}/users/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ field, value }),
+    });
+    if (res.ok) {
+      if (selectedDate) fetchEntries(selectedDate.id);
+    } else {
+      const data = await res.json();
+      alert(data.error);
+    }
+  };
+
+  const resetEntries = async () => {
+    if (!selectedDate || !confirm('Reset all rows to default?')) return;
+    await fetch(`/api/dates/${selectedDate.id}/reset`, { method: 'POST' });
+    fetchEntries(selectedDate.id);
+  };
+
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-stone-50">
+        <RefreshCw className="w-8 h-8 animate-spin text-stone-400" />
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center bg-stone-50 p-4">
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="max-w-md w-full bg-white p-8 rounded-2xl shadow-sm border border-stone-200 text-center"
+        >
+          <div className="w-16 h-16 flex items-center justify-center mx-auto mb-6">
+            <img src={logo} alt="IEEE ITS Logo" className="w-full h-full object-contain" />
+          </div>
+          <h1 className="text-2xl font-semibold mb-2">IEEE ITS NIGHT SLIP MANAGEMENT</h1>
+          <p className="text-stone-500 mb-8">Secure portal for night slip and late hour requests.</p>
+          {loginError && <p className="text-red-500 text-sm mb-4 text-center">{loginError}</p>}
+          <button
+            onClick={handleLogin}
+            className="w-full py-3 px-4 bg-stone-900 text-white rounded-xl font-medium hover:bg-stone-800 transition-colors flex items-center justify-center gap-2"
+          >
+            <User className="w-5 h-5" />
+            Sign in with Google
+          </button>
+        </motion.div>
+      </div>
+    );
+  }
+
+  const isAdmin = ADMIN_EMAILS.includes(user.email);
+
+  const filteredEntries = entries.filter(e =>
+    (e.name || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+    (e.reg_no || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+    (e.email || '').toLowerCase().includes(searchQuery.toLowerCase())
+  );
+
+  return (
+    <div className="min-h-screen bg-stone-50">
+      {/* Header */}
+      <header className="bg-white border-bottom border-stone-200 sticky top-0 z-10">
+        <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
+          <div className="flex items-center gap-3 cursor-pointer" onClick={() => setSelectedDate(null)}>
+            <div className="w-8 h-8 flex items-center justify-center">
+              <img src={logo} alt="Logo" className="w-full h-full object-contain" />
+            </div>
+            <span className="font-semibold hidden sm:inline">IEEE ITS</span >
+          </div>
+
+          <div className="flex items-center gap-4">
+            <div className="flex flex-col items-end">
+              <span className="text-sm font-medium">{user.name}</span>
+              <span className="text-xs text-stone-500">{user.email}</span>
+            </div>
+            <button
+              onClick={handleLogout}
+              className="p-2 text-stone-400 hover:text-stone-900 transition-colors"
+            >
+              <LogOut className="w-5 h-5" />
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <main className="max-w-7xl mx-auto px-4 py-8">
+        <AnimatePresence mode="wait">
+          {!selectedDate ? (
+            <motion.div
+              key="date-selection"
+              initial={{ opacity: 0, x: -20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: 20 }}
+            >
+              <div className="flex items-center justify-between mb-8">
+                <h2 className="text-2xl font-semibold">Select Date</h2>
+                {isAdmin && (
+                  <div className="flex gap-2">
+                    <input
+                      type="date"
+                      value={newDate}
+                      onChange={(e) => setNewDate(e.target.value)}
+                      className="px-3 py-2 bg-white border border-stone-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-stone-900/10"
+                    />
+                    <button
+                      onClick={addDate}
+                      className="p-2 bg-stone-900 text-white rounded-lg hover:bg-stone-800 transition-colors"
+                    >
+                      <Plus className="w-5 h-5" />
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                {dates.map((date) => (
+                  <div
+                    key={date.id}
+                    className="group bg-white p-6 rounded-2xl border border-stone-200 hover:border-stone-400 transition-all cursor-pointer flex items-center justify-between"
+                    onClick={() => setSelectedDate(date)}
+                  >
+                    <div className="flex items-center gap-4">
+                      <div className="w-12 h-12 bg-stone-100 rounded-xl flex items-center justify-center group-hover:bg-stone-900 transition-colors">
+                        <Calendar className="w-6 h-6 text-stone-400 group-hover:text-white" />
+                      </div>
+                      <div>
+                        <p className="font-medium">{new Date(date.date_string).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}</p>
+                        <p className="text-sm text-stone-500">{date.date_string}</p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {isAdmin && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); deleteDate(date.id); }}
+                          className="p-2 text-stone-300 hover:text-red-500 transition-colors"
+                        >
+                          <Trash2 className="w-5 h-5" />
+                        </button>
+                      )}
+                      <ChevronRight className="w-5 h-5 text-stone-300" />
+                    </div>
+                  </div>
+                ))}
+                {dates.length === 0 && (
+                  <div className="col-span-full py-12 text-center text-stone-500">
+                    No dates available. {isAdmin ? 'Add a date to get started.' : 'Please wait for admin to add dates.'}
+                  </div>
+                )}
+              </div>
+            </motion.div>
+          ) : (
+            <motion.div
+              key="sheet-view"
+              initial={{ opacity: 0, x: 20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -20 }}
+            >
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-4">
+                <div className="flex items-center gap-4">
+                  <button
+                    onClick={() => setSelectedDate(null)}
+                    className="p-2 hover:bg-stone-100 rounded-lg transition-colors"
+                  >
+                    <ChevronRight className="w-5 h-5 rotate-180" />
+                  </button>
+                  <div>
+                    <h2 className="text-2xl font-semibold">{new Date(selectedDate.date_string).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}</h2>
+                    <p className="text-sm text-stone-500">Night Slip & Late Hour Requests</p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-4 w-full sm:w-auto">
+                  <div className="relative w-full max-w-[200px] sm:max-w-xs">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-stone-400" />
+                    <input
+                      placeholder="Search name, reg no..."
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      className="w-full pl-9 pr-4 py-2 bg-white border border-stone-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-stone-900/10"
+                    />
+                  </div>
+
+                  {isAdmin && (
+                    <button
+                      onClick={resetEntries}
+                      className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-stone-600 hover:text-stone-900 transition-colors"
+                    >
+                      <RefreshCw className="w-4 h-4" />
+                      Reset All
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {isAdmin && (
+                <div className="flex flex-wrap items-center gap-3 mb-6 p-4 bg-white border border-stone-200 rounded-xl shadow-sm">
+                  <div className="text-sm font-semibold text-stone-700 w-full sm:w-auto mr-2">Manage Master Data:</div>
+                  <input
+                    placeholder="Name"
+                    value={newName}
+                    onChange={(e) => setNewName(e.target.value)}
+                    className="flex-1 min-w-[120px] px-3 py-2 bg-white border border-stone-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-stone-900/10"
+                  />
+                  <input
+                    placeholder="Reg No"
+                    value={newRegNo}
+                    onChange={(e) => setNewRegNo(e.target.value)}
+                    className="w-28 px-3 py-2 bg-white border border-stone-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-stone-900/10"
+                  />
+                  <input
+                    placeholder="Email"
+                    value={newEmail}
+                    onChange={(e) => setNewEmail(e.target.value)}
+                    className="flex-1 min-w-[150px] px-3 py-2 bg-white border border-stone-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-stone-900/10"
+                  />
+                  <button
+                    onClick={addMasterUser}
+                    className="px-4 py-2 bg-stone-900 text-white rounded-lg hover:bg-stone-800 transition-colors text-sm font-medium whitespace-nowrap"
+                  >
+                    Add Student
+                  </button>
+                  <label className="flex items-center gap-2 px-4 py-2 bg-stone-100 text-stone-700 rounded-lg hover:bg-stone-200 transition-colors text-sm font-medium cursor-pointer whitespace-nowrap">
+                    <Upload className="w-4 h-4" />
+                    Upload CSV
+                    <input type="file" accept=".csv" onChange={handleFileUpload} className="hidden" />
+                  </label>
+                </div>
+              )}
+
+              <div className="bg-white rounded-2xl border border-stone-200 overflow-hidden shadow-sm">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse">
+                    <thead>
+                      <tr className="bg-stone-50 border-b border-stone-200">
+                        <th className="px-6 py-4 text-xs font-semibold text-stone-500 uppercase tracking-wider">Name</th>
+                        <th className="px-6 py-4 text-xs font-semibold text-stone-500 uppercase tracking-wider">Reg No</th>
+                        <th className="px-6 py-4 text-xs font-semibold text-stone-500 uppercase tracking-wider">Email</th>
+                        <th className="px-6 py-4 text-xs font-semibold text-stone-500 uppercase tracking-wider">Coming</th>
+                        <th className="px-6 py-4 text-xs font-semibold text-stone-500 uppercase tracking-wider">Applied</th>
+                        <th className="px-6 py-4 text-xs font-semibold text-stone-500 uppercase tracking-wider">Night Slip</th>
+                        <th className="px-6 py-4 text-xs font-semibold text-stone-500 uppercase tracking-wider">Late Hour</th>
+                        <th className="px-6 py-4 text-xs font-semibold text-stone-500 uppercase tracking-wider">Status</th>
+                        {isAdmin && <th className="px-6 py-4 text-xs font-semibold text-stone-500 uppercase tracking-wider">Manage</th>}
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-stone-100">
+                      {filteredEntries.map((entry) => {
+                        const isUserRow = entry.email.toLowerCase() === user.email.toLowerCase();
+                        const canEdit = isAdmin || (isUserRow && entry.is_locked === 0);
+
+                        const getBgColor = (text: string) => {
+                          const upper = (text || '').toUpperCase();
+                          if (['COMING', 'APPLIED', 'PRESENT'].includes(upper)) return 'bg-[#B6D7A8] text-green-900';
+                          return 'bg-[#EA9999] text-red-900';
+                        };
+
+                        return (
+                          <tr key={entry.id} className="hover:bg-stone-50/50 transition-colors">
+                            <td className="px-6 py-4 text-sm font-bold text-stone-800">
+                              {isAdmin ? (
+                                <input
+                                  value={entry.name}
+                                  onChange={(e) => updateMasterUser(entry.id, 'name', e.target.value)}
+                                  className="bg-transparent border border-stone-200 focus:border-stone-400 rounded px-1 py-0.5 w-full font-bold"
+                                />
+                              ) : (
+                                entry.name
+                              )}
+                            </td>
+                            <td className="px-6 py-4 text-sm font-semibold text-stone-600">
+                              {isAdmin ? (
+                                <input
+                                  value={entry.reg_no}
+                                  onChange={(e) => updateMasterUser(entry.id, 'reg_no', e.target.value)}
+                                  className="bg-transparent border border-stone-200 focus:border-stone-400 rounded px-1 py-0.5 w-full font-semibold"
+                                />
+                              ) : (
+                                entry.reg_no
+                              )}
+                            </td>
+                            <td className="px-6 py-4 text-sm text-stone-500">
+                              {isAdmin ? (
+                                <input
+                                  value={entry.email}
+                                  onChange={(e) => updateMasterUser(entry.id, 'email', e.target.value)}
+                                  className="bg-transparent border border-stone-200 focus:border-stone-400 rounded px-1 py-0.5 w-full"
+                                />
+                              ) : (
+                                entry.email
+                              )}
+                            </td>
+                            <td className="px-6 py-4">
+                              <select
+                                value={entry.coming}
+                                disabled={!canEdit}
+                                onChange={(e) => updateEntry(entry.id, 'coming', e.target.value)}
+                                className={`text-xs font-bold px-2 py-1 rounded-md border-none focus:ring-0 cursor-pointer disabled:cursor-not-allowed ${getBgColor(entry.coming)}`}
+                              >
+                                <option value="COMING">COMING</option>
+                                <option value="NOT COMING">NOT COMING</option>
+                              </select>
+                            </td>
+                            <td className="px-6 py-4">
+                              <select
+                                value={entry.applied}
+                                disabled={!canEdit}
+                                onChange={(e) => updateEntry(entry.id, 'applied', e.target.value)}
+                                className={`text-xs font-bold px-2 py-1 rounded-md border-none focus:ring-0 cursor-pointer disabled:cursor-not-allowed ${getBgColor(entry.applied)}`}
+                              >
+                                <option value="APPLIED">APPLIED</option>
+                                <option value="NOT APPLIED">NOT APPLIED</option>
+                              </select>
+                            </td>
+                            <td className="px-6 py-4">
+                              {isAdmin ? (
+                                <select
+                                  value={entry.attendance_1}
+                                  onChange={(e) => updateEntry(entry.id, 'attendance_1', e.target.value)}
+                                  className={`text-xs font-bold px-2 py-1 rounded-md border-none focus:ring-0 cursor-pointer ${getBgColor(entry.attendance_1)}`}
+                                >
+                                  <option value="PRESENT">PRESENT</option>
+                                  <option value="ABSENT">ABSENT</option>
+                                </select>
+                              ) : (
+                                <span className={`text-xs font-bold px-2 py-1 rounded-md ${getBgColor(entry.attendance_1)}`}>
+                                  {entry.attendance_1}
+                                </span>
+                              )}
+                            </td>
+                            <td className="px-6 py-4">
+                              {isAdmin ? (
+                                <select
+                                  value={entry.attendance_2}
+                                  onChange={(e) => updateEntry(entry.id, 'attendance_2', e.target.value)}
+                                  className={`text-xs font-bold px-2 py-1 rounded-md border-none focus:ring-0 cursor-pointer ${getBgColor(entry.attendance_2)}`}
+                                >
+                                  <option value="PRESENT">PRESENT</option>
+                                  <option value="ABSENT">ABSENT</option>
+                                </select>
+                              ) : (
+                                <span className={`text-xs font-bold px-2 py-1 rounded-md ${getBgColor(entry.attendance_2)}`}>
+                                  {entry.attendance_2}
+                                </span>
+                              )}
+                            </td>
+                            <td className="px-6 py-4">
+                              <div className="flex items-center gap-2">
+                                {isAdmin ? (
+                                  <button
+                                    onClick={() => updateEntry(entry.id, 'is_locked', entry.is_locked === 1 ? '0' : '1')}
+                                    className={`flex items-center gap-1 text-xs font-medium transition-colors ${entry.is_locked === 1 ? 'text-amber-600 hover:text-amber-700' : 'text-green-600 hover:text-green-700'}`}
+                                  >
+                                    {entry.is_locked === 1 ? <Lock className="w-3 h-3" /> : <Unlock className="w-3 h-3" />}
+                                    {entry.is_locked === 1 ? 'Locked' : 'Open'}
+                                  </button>
+                                ) : (
+                                  entry.is_locked === 1 ? (
+                                    <div className="flex items-center gap-1 text-xs text-stone-400 font-medium">
+                                      <Lock className="w-3 h-3" />
+                                      Locked
+                                    </div>
+                                  ) : (
+                                    <div className="flex items-center gap-1 text-xs text-green-600 font-medium">
+                                      <Unlock className="w-3 h-3" />
+                                      Open
+                                    </div>
+                                  )
+                                )}
+                              </div>
+                            </td>
+                            {isAdmin && (
+                              <td className="px-6 py-4">
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); deleteMasterUser(entry.id); }}
+                                  className="p-1.5 text-stone-300 hover:text-red-500 hover:bg-red-50 rounded-md transition-colors"
+                                  title="Delete Student History"
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </button>
+                              </td>
+                            )}
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                {entries.length === 0 && (
+                  <div className="py-20 text-center">
+                    <AlertCircle className="w-12 h-12 text-stone-200 mx-auto mb-4" />
+                    <p className="text-stone-500">No entries found for this date.</p>
+                    {isAdmin && <p className="text-sm text-stone-400 mt-1">Add rows to start tracking.</p>}
+                  </div>
+                )}
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </main>
+    </div>
+  );
+}
